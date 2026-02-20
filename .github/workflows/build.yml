@@ -52,23 +52,33 @@ jobs:
           fi
 
           release_api="https://api.github.com/repos/grafana/loki/releases/latest"
-          asset_url="$(curl -fsSL "$release_api" | grep -Eo 'https://[^"]+loki[^"]*linux[^"]*amd64[^"]*\.zip' | head -n1)"
+          asset_url="$(curl -fsSL "$release_api" | grep -Eo 'https://[^"]+' | grep -E '/loki-linux-amd64(\.zip|\.gz)?$' | head -n1)"
           if [ -z "$asset_url" ]; then
             echo "Could not find a Linux amd64 Loki binary in latest release metadata." >&2
             exit 1
           fi
 
-          tmp_zip="/tmp/loki-linux-amd64.zip"
           tmp_dir="/tmp/loki-install"
           rm -rf "$tmp_dir"
           mkdir -p "$tmp_dir"
 
-          curl -fsSL "$asset_url" -o "$tmp_zip"
-          unzip -q "$tmp_zip" -d "$tmp_dir"
+          case "$asset_url" in
+            *.zip)
+              curl -fsSL "$asset_url" -o /tmp/loki-linux-amd64.zip
+              unzip -q /tmp/loki-linux-amd64.zip -d "$tmp_dir"
+              ;;
+            *.gz)
+              curl -fsSL "$asset_url" -o /tmp/loki-linux-amd64.gz
+              gunzip -c /tmp/loki-linux-amd64.gz > "$tmp_dir/loki"
+              ;;
+            *)
+              curl -fsSL "$asset_url" -o "$tmp_dir/loki"
+              ;;
+          esac
 
-          loki_bin="$(find "$tmp_dir" -maxdepth 1 -type f -name 'loki*' | head -n1)"
+          loki_bin="$(find "$tmp_dir" -maxdepth 1 -type f \( -name 'loki' -o -name 'loki-linux-amd64' \) | head -n1)"
           if [ -z "$loki_bin" ]; then
-            echo "Downloaded archive did not contain a Loki binary." >&2
+            echo "Downloaded asset did not contain a Loki server binary." >&2
             ls -la "$tmp_dir" >&2 || true
             exit 1
           fi
