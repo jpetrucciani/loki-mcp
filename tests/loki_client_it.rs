@@ -4,10 +4,15 @@ use anyhow::Result;
 use chrono::{Duration, Utc};
 use loki_mcp::{config::LokiConfig, loki::client::LokiClient};
 use serde_json::Value;
-use support::loki::LokiTestHarness;
+use support::loki::{LokiTestHarness, skip_reason_for_real_loki_tests};
 
 #[tokio::test]
 async fn loki_client_endpoints_work_against_real_loki() -> Result<()> {
+    if let Some(reason) = skip_reason_for_real_loki_tests() {
+        eprintln!("skipping `loki_client_endpoints_work_against_real_loki`: {reason}");
+        return Ok(());
+    }
+
     let harness = LokiTestHarness::start().await?;
     harness.seed_example_logs().await?;
 

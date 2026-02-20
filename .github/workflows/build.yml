@@ -25,11 +25,61 @@ jobs:
       - name: install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.15.2
       - name: run tests
+        env:
+          LOKI_MCP_RUN_REAL_LOKI_TESTS: '0'
         run: cargo test --verbose
       - name: build
         run: cargo build --verbose
       - name: build release
         run: cargo build --release --verbose
+
+  test-real-loki:
+    name: real-loki integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6.0.1
+      - name: install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.15.2
+      - name: install loki binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! command -v unzip >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y unzip
+          fi
+
+          release_api="https://api.github.com/repos/grafana/loki/releases/latest"
+          asset_url="$(curl -fsSL "$release_api" | grep -Eo 'https://[^"]+loki[^"]*linux[^"]*amd64[^"]*\.zip' | head -n1)"
+          if [ -z "$asset_url" ]; then
+            echo "Could not find a Linux amd64 Loki binary in latest release metadata." >&2
+            exit 1
+          fi
+
+          tmp_zip="/tmp/loki-linux-amd64.zip"
+          tmp_dir="/tmp/loki-install"
+          rm -rf "$tmp_dir"
+          mkdir -p "$tmp_dir"
+
+          curl -fsSL "$asset_url" -o "$tmp_zip"
+          unzip -q "$tmp_zip" -d "$tmp_dir"
+
+          loki_bin="$(find "$tmp_dir" -maxdepth 1 -type f -name 'loki*' | head -n1)"
+          if [ -z "$loki_bin" ]; then
+            echo "Downloaded archive did not contain a Loki binary." >&2
+            ls -la "$tmp_dir" >&2 || true
+            exit 1
+          fi
+
+          chmod +x "$loki_bin"
+          sudo install -m 0755 "$loki_bin" /usr/local/bin/loki
+          loki --version
+      - name: run real-loki integration tests
+        env:
+          LOKI_MCP_RUN_REAL_LOKI_TESTS: '1'
+        run: cargo test --test loki_client_it --test tool_router_it --verbose
 
   format:
     name: check formatting

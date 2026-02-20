@@ -24,6 +24,8 @@ pub struct LokiTestHarness {
     _guard: OwnedMutexGuard<()>,
 }
 
+const RUN_REAL_LOKI_TESTS_ENV: &str = "LOKI_MCP_RUN_REAL_LOKI_TESTS";
+
 impl LokiTestHarness {
     pub async fn start() -> Result<Self> {
         let lock = harness_lock().lock_owned().await;
@@ -247,10 +249,7 @@ impl Drop for LokiTestHarness {
 }
 
 fn ensure_loki_available() -> Result<()> {
-    let status = Command::new("loki")
-        .arg("--version")
-        .status()
-        .context("failed to execute loki binary from PATH")?;
+    let status = loki_version_status().context("failed to execute loki binary from PATH")?;
 
     if !status.success() {
         bail!(
@@ -259,6 +258,46 @@ fn ensure_loki_available() -> Result<()> {
     }
 
     Ok(())
+}
+
+pub fn is_loki_available() -> bool {
+    match loki_version_status() {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
+}
+
+pub fn should_run_real_loki_tests() -> bool {
+    matches!(
+        std::env::var(RUN_REAL_LOKI_TESTS_ENV)
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+pub fn skip_reason_for_real_loki_tests() -> Option<String> {
+    if !should_run_real_loki_tests() {
+        return Some(format!(
+            "set {RUN_REAL_LOKI_TESTS_ENV}=1 to enable real-Loki integration tests"
+        ));
+    }
+
+    if !is_loki_available() {
+        return Some("`loki` binary is not on PATH".to_string());
+    }
+
+    None
+}
+
+fn loki_version_status() -> Result<std::process::ExitStatus> {
+    Command::new("loki")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to execute loki binary from PATH")
 }
 
 fn harness_lock() -> Arc<tokio::sync::Mutex<()>> {

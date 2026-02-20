@@ -6,10 +6,15 @@ use loki_mcp::{
     tools::ToolRouter,
 };
 use serde_json::json;
-use support::loki::LokiTestHarness;
+use support::loki::{LokiTestHarness, skip_reason_for_real_loki_tests};
 
 #[tokio::test]
 async fn tool_router_query_tools_execute_against_real_loki() -> Result<()> {
+    if let Some(reason) = skip_reason_for_real_loki_tests() {
+        eprintln!("skipping `tool_router_query_tools_execute_against_real_loki`: {reason}");
+        return Ok(());
+    }
+
     let harness = LokiTestHarness::start().await?;
     harness.seed_example_logs().await?;
 
@@ -66,6 +71,11 @@ async fn tool_router_query_tools_execute_against_real_loki() -> Result<()> {
 
 #[tokio::test]
 async fn tool_router_uses_cache_when_loki_becomes_unavailable() -> Result<()> {
+    if let Some(reason) = skip_reason_for_real_loki_tests() {
+        eprintln!("skipping `tool_router_uses_cache_when_loki_becomes_unavailable`: {reason}");
+        return Ok(());
+    }
+
     let mut harness = LokiTestHarness::start().await?;
     harness.seed_example_logs().await?;
 
@@ -89,6 +99,11 @@ async fn tool_router_uses_cache_when_loki_becomes_unavailable() -> Result<()> {
 
 #[tokio::test]
 async fn tool_router_guardrails_reject_over_threshold_query() -> Result<()> {
+    if let Some(reason) = skip_reason_for_real_loki_tests() {
+        eprintln!("skipping `tool_router_guardrails_reject_over_threshold_query`: {reason}");
+        return Ok(());
+    }
+
     let harness = LokiTestHarness::start().await?;
     harness.seed_example_logs().await?;
 

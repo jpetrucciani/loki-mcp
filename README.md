@@ -230,6 +230,12 @@ cargo test --verbose
 
 Integration tests require a local `loki` binary on `PATH`.
 
+Real-Loki integration tests are opt-in:
+
+```bash
+LOKI_MCP_RUN_REAL_LOKI_TESTS=1 cargo test --test loki_client_it --test tool_router_it --verbose
+```
+
 ## Troubleshooting
 
 - `guardrail pre-check failed ...`, Loki could not provide cost estimates, narrow selector/range or adjust guardrails
