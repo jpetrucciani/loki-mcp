@@ -1,0 +1,31 @@
+[package]
+name = "loki-mcp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "MCP server for querying Grafana Loki, built for AI agents"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+clap = { version = "4", features = ["derive", "env"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+governor = "0.8"
+moka = { version = "0.12", features = ["future"] }
+prometheus = { version = "0.14", features = ["process"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rmcp = { version = "0.15", default-features = false, features = ["server", "server-side-http", "transport-streamable-http-server"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+insta = "1"

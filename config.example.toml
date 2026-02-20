@@ -1,0 +1,57 @@
+[server]
+listen = "0.0.0.0:8080"
+timezone = "America/New_York"
+log_level = "info"
+identity_header = ""
+
+[loki]
+url = "https://loki.internal:3100"
+tenant_id = ""
+auth_type = "none"
+username = ""
+password = ""
+token = ""
+ca_cert = ""
+timeout = "30s"
+
+[cache]
+enabled = true
+ttl = "60s"
+skip_if_range_shorter_than = "60s"
+max_entries = 1000
+
+[guardrails]
+max_bytes_scanned = "500MB"
+max_streams = 5000
+skip_stats_if_streams_below = 50
+skip_stats_if_range_shorter_than = "15m"
+
+[rate_limit]
+enabled = true
+rps = 10.0
+burst = 30
+
+[metrics]
+prefix = "loki_mcp"
+
+[recent_actions]
+enabled = false
+max_entries = 500
+ttl = "30m"
+store_query_text = false
+store_error_text = false
+
+[[labels]]
+name = "namespace"
+description = "Kubernetes namespace the workload runs in"
+common_values = ["production", "staging", "monitoring", "kube-system"]
+
+[[structured_metadata]]
+name = "trace_id"
+description = "Distributed tracing trace ID"
+
+[[saved_queries]]
+name = "recent_errors"
+description = "Error logs in last 15 minutes"
+query = "{level=\"error\"}"
+range = "15m"
