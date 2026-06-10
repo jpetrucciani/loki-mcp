@@ -12,7 +12,7 @@ use crate::{
     config::Config,
     loki::client::LokiClient,
     response::{ResponseMode, format_log_result},
-    time::resolve_time_range,
+    time::resolve_time_range_with_range,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -20,6 +20,7 @@ pub struct QueryLogsInput {
     pub query: String,
     pub start: Option<String>,
     pub end: Option<String>,
+    pub range: Option<String>,
     pub limit: Option<u32>,
     pub direction: Option<String>,
     pub response_mode: Option<ResponseMode>,
@@ -30,6 +31,7 @@ pub struct QueryMetricsInput {
     pub query: String,
     pub start: Option<String>,
     pub end: Option<String>,
+    pub range: Option<String>,
     pub step: Option<String>,
 }
 
@@ -45,13 +47,16 @@ pub struct BuildQueryInput {
     pub aggregation_range: Option<String>,
     pub start: Option<String>,
     pub end: Option<String>,
+    pub range: Option<String>,
     pub limit: Option<u32>,
     pub response_mode: Option<ResponseMode>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TailInput {
-    pub labels: BTreeMap<String, String>,
+    pub labels: Option<BTreeMap<String, String>>,
+    pub query: Option<String>,
+    pub range: Option<String>,
     pub lines: Option<u32>,
     pub response_mode: Option<ResponseMode>,
 }
@@ -64,9 +69,10 @@ pub struct RunSavedQueryInput {
 }
 
 pub async fn query_logs(client: &LokiClient, timezone: Tz, input: QueryLogsInput) -> Result<Value> {
-    let (start, end) = resolve_time_range(
+    let (start, end) = resolve_time_range_with_range(
         input.start.as_deref(),
         input.end.as_deref(),
+        input.range.as_deref(),
         timezone,
         Utc::now(),
     )?;
@@ -98,9 +104,10 @@ pub async fn query_metrics(
     timezone: Tz,
     input: QueryMetricsInput,
 ) -> Result<Value> {
-    let (start, end) = resolve_time_range(
+    let (start, end) = resolve_time_range_with_range(
         input.start.as_deref(),
         input.end.as_deref(),
+        input.range.as_deref(),
         timezone,
         Utc::now(),
     )?;
@@ -126,9 +133,10 @@ pub async fn build_query(
     let mut query = build_query_string(&input)?;
     let requested_response_mode = input.response_mode.unwrap_or_default();
 
-    let (start, end) = resolve_time_range(
+    let (start, end) = resolve_time_range_with_range(
         input.start.as_deref(),
         input.end.as_deref(),
+        input.range.as_deref(),
         timezone,
         Utc::now(),
     )?;
@@ -170,17 +178,14 @@ pub async fn build_query(
 }
 
 pub async fn tail(client: &LokiClient, timezone: Tz, input: TailInput) -> Result<Value> {
-    if input.labels.is_empty() {
-        bail!("tail labels must not be empty");
-    }
-
-    let selector = selector_from_labels(&input.labels);
+    let query = tail_query(&input)?;
     let requested_response_mode = input.response_mode.unwrap_or_default();
 
-    let (start, end) = resolve_time_range(None, None, timezone, Utc::now())?;
+    let (start, end) =
+        resolve_time_range_with_range(None, None, input.range.as_deref(), timezone, Utc::now())?;
     let data = client
         .query_logs(
-            &selector,
+            &query,
             Some(start),
             Some(end),
             Some(input.lines.unwrap_or(50)),
@@ -190,13 +195,36 @@ pub async fn tail(client: &LokiClient, timezone: Tz, input: TailInput) -> Result
     let (response_mode, formatted_data) = format_log_result(requested_response_mode, data);
 
     Ok(json!({
-        "query": selector,
+        "query": query,
         "start": start,
         "end": end,
         "response_mode_requested": requested_response_mode,
         "response_mode": response_mode,
         "data": formatted_data,
     }))
+}
+
+pub(crate) fn tail_query(input: &TailInput) -> Result<String> {
+    let labels = input.labels.as_ref().filter(|labels| !labels.is_empty());
+    let query = input
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty());
+
+    if labels.is_some() && query.is_some() {
+        bail!("tail accepts either query or labels, not both");
+    }
+
+    if let Some(query) = query {
+        return Ok(query.to_string());
+    }
+
+    let Some(labels) = labels else {
+        bail!("tail requires a non-empty query or labels");
+    };
+
+    Ok(selector_from_labels(labels))
 }
 
 pub async fn run_saved_query(
@@ -218,7 +246,8 @@ pub async fn run_saved_query(
         .as_deref()
         .unwrap_or(saved_query.range.as_str());
 
-    let (start, end) = resolve_time_range(Some(range), None, timezone, Utc::now())?;
+    let (start, end) =
+        resolve_time_range_with_range(Some(range), None, None, timezone, Utc::now())?;
 
     let requested_response_mode = input.response_mode.unwrap_or_default();
     let data = client
@@ -303,4 +332,62 @@ pub(crate) fn validate_aggregation(aggregation: &str) -> Result<()> {
 
 fn escape_logql_value(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::tools::query::{TailInput, tail_query};
+
+    #[test]
+    fn tail_query_accepts_logql_query() {
+        let input = TailInput {
+            labels: None,
+            query: Some("{service_name=~\"bot.*\"}".to_string()),
+            range: None,
+            lines: None,
+            response_mode: None,
+        };
+
+        assert_eq!(
+            tail_query(&input).expect("valid"),
+            "{service_name=~\"bot.*\"}"
+        );
+    }
+
+    #[test]
+    fn tail_query_builds_selector_from_labels() {
+        let mut labels = BTreeMap::new();
+        labels.insert("service_name".to_string(), "bot-hourly".to_string());
+        let input = TailInput {
+            labels: Some(labels),
+            query: None,
+            range: None,
+            lines: None,
+            response_mode: None,
+        };
+
+        assert_eq!(
+            tail_query(&input).expect("valid"),
+            "{service_name=\"bot-hourly\"}"
+        );
+    }
+
+    #[test]
+    fn tail_query_rejects_ambiguous_inputs() {
+        let mut labels = BTreeMap::new();
+        labels.insert("service_name".to_string(), "bot-hourly".to_string());
+        let input = TailInput {
+            labels: Some(labels),
+            query: Some("{service_name=~\"bot.*\"}".to_string()),
+            range: None,
+            lines: None,
+            response_mode: None,
+        };
+
+        let error = tail_query(&input).expect_err("ambiguous input should fail");
+
+        assert!(error.to_string().contains("either query or labels"));
+    }
 }

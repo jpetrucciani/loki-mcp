@@ -10,7 +10,7 @@
 
 ## Features
 
-- 15 read-only MCP tools for discovery, querying, analysis, and health checks
+- 16 read-only MCP tools for discovery, querying, analysis, and health checks
 - Config layering with validation: `TOML -> env -> CLI`
 - Loki auth modes: `none`, `basic`, `bearer`
 - Optional static-header auth for MCP and debug endpoints
@@ -28,6 +28,7 @@ Discovery:
 - `loki_describe_schema`
 - `loki_list_labels`
 - `loki_label_values`
+- `loki_search_label_values`
 - `loki_series`
 
 Query and execution:
@@ -210,8 +211,15 @@ Rate limiting identity keys are resolved in this order:
 
 Time handling:
 
-- If `start` and `end` are omitted, default range is last `30m` ending at `now`
-- Supported references: RFC3339, durations like `15m`, `now`, `today`, `yesterday`, `since 2pm`
+- If `start` and `end` are omitted on query tools, default range is last `30m` ending at `now`
+- `start` and `end` accept RFC3339, modern Unix epoch seconds, durations like `15m`, `now`, `today`, `yesterday`, and `since 2pm`
+- Tools with `start`/`end` also accept `range`, for example `{"range": "10m"}` for the last 10 minutes. `range` may be combined with `end`, but not with `start`
+
+Label discovery:
+
+- `loki_label_values` supports `prefix` and `pattern` substring filters in addition to Loki's `query` selector scoping
+- `loki_search_label_values` searches across all labels, or a provided `labels` list, and returns only values matching `prefix` or `pattern`
+- `loki_tail` accepts either `labels` or a LogQL `query`, for example `{cluster="cy1-service-01",service_name=~"bot.*"}`
 
 Response modes (`loki_query_logs`, `loki_build_query`, `loki_tail`, `loki_run_saved_query`):
 

@@ -84,6 +84,10 @@ pub fn parse_time_reference(
         return Ok(parsed.with_timezone(&Utc));
     }
 
+    if let Some(parsed) = parse_unix_epoch_seconds(normalized)? {
+        return Ok(parsed);
+    }
+
     let lowercase = normalized.to_ascii_lowercase();
 
     if lowercase == "now" {
@@ -124,14 +128,30 @@ pub fn resolve_time_range(
     timezone: Tz,
     now: DateTime<Utc>,
 ) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+    resolve_time_range_with_range(start, end, None, timezone, now)
+}
+
+pub fn resolve_time_range_with_range(
+    start: Option<&str>,
+    end: Option<&str>,
+    range: Option<&str>,
+    timezone: Tz,
+    now: DateTime<Utc>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
+    if start.is_some() && range.is_some() {
+        bail!("range cannot be combined with start");
+    }
+
     let end_time = match end {
         Some(raw) => parse_time_reference(raw, timezone, now)?,
         None => now,
     };
 
-    let start_time = match start {
-        Some(raw) => parse_time_reference(raw, timezone, end_time)?,
-        None => default_query_window(end_time).0,
+    let start_time = match (start, range) {
+        (Some(raw), None) => parse_time_reference(raw, timezone, end_time)?,
+        (None, Some(raw)) => end_time - parse_relative_duration(raw)?,
+        (None, None) => default_query_window(end_time).0,
+        (Some(_), Some(_)) => unreachable!("validated above"),
     };
 
     if start_time > end_time {
@@ -139,6 +159,60 @@ pub fn resolve_time_range(
     }
 
     Ok((start_time, end_time))
+}
+
+fn parse_unix_epoch_seconds(input: &str) -> Result<Option<DateTime<Utc>>> {
+    let Some((seconds_text, fractional_text)) = split_epoch_seconds(input) else {
+        return Ok(None);
+    };
+
+    if seconds_text.len() < 10 {
+        return Ok(None);
+    }
+
+    let seconds = seconds_text
+        .parse::<i64>()
+        .map_err(|_| anyhow!("invalid Unix epoch seconds: {input}"))?;
+    let nanoseconds = match fractional_text {
+        Some(fractional) => parse_fractional_nanoseconds(fractional)?,
+        None => 0,
+    };
+
+    DateTime::<Utc>::from_timestamp(seconds, nanoseconds)
+        .ok_or_else(|| anyhow!("Unix epoch seconds out of range: {input}"))
+        .map(Some)
+}
+
+fn split_epoch_seconds(input: &str) -> Option<(&str, Option<&str>)> {
+    let (seconds, fractional) = input
+        .split_once('.')
+        .map_or((input, None), |(seconds, rest)| (seconds, Some(rest)));
+
+    if seconds.is_empty() || !seconds.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+
+    if let Some(fractional) = fractional
+        && (fractional.is_empty()
+            || !fractional
+                .chars()
+                .all(|character| character.is_ascii_digit()))
+    {
+        return None;
+    }
+
+    Some((seconds, fractional))
+}
+
+fn parse_fractional_nanoseconds(input: &str) -> Result<u32> {
+    if input.len() > 9 {
+        bail!("Unix epoch fractional seconds support at most 9 digits");
+    }
+
+    let padded = format!("{input:0<9}");
+    padded
+        .parse::<u32>()
+        .map_err(|_| anyhow!("invalid Unix epoch fractional seconds: {input}"))
 }
 
 fn split_value_and_unit(input: &str) -> Result<(String, String)> {
@@ -236,7 +310,7 @@ mod tests {
 
     use crate::time::{
         default_query_window, parse_relative_duration, parse_std_duration, parse_time_reference,
-        resolve_time_range,
+        resolve_time_range, resolve_time_range_with_range,
     };
 
     #[test]
@@ -288,6 +362,57 @@ mod tests {
     }
 
     #[test]
+    fn parses_unix_epoch_seconds() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 18, 20, 0, 0)
+            .single()
+            .expect("fixed timestamp");
+
+        let parsed =
+            parse_time_reference("1700000000", New_York, now).expect("parse Unix timestamp");
+        let expected = Utc
+            .with_ymd_and_hms(2023, 11, 14, 22, 13, 20)
+            .single()
+            .expect("fixed timestamp");
+
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn parses_fractional_unix_epoch_seconds() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 18, 20, 0, 0)
+            .single()
+            .expect("fixed timestamp");
+
+        let parsed =
+            parse_time_reference("1700000000.250", New_York, now).expect("parse Unix timestamp");
+        let expected = Utc
+            .timestamp_opt(1_700_000_000, 250_000_000)
+            .single()
+            .expect("fixed timestamp");
+
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn short_bare_numbers_are_not_timestamps() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 18, 20, 0, 0)
+            .single()
+            .expect("fixed timestamp");
+
+        let error =
+            parse_time_reference("30", New_York, now).expect_err("bare duration should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("duration must include a unit suffix")
+        );
+    }
+
+    #[test]
     fn resolves_default_window_when_start_and_end_missing() {
         let now = Utc
             .with_ymd_and_hms(2026, 2, 18, 12, 0, 0)
@@ -297,6 +422,35 @@ mod tests {
         let (start, end) = resolve_time_range(None, None, New_York, now).expect("valid range");
         assert_eq!(end, now);
         assert_eq!(end - start, Duration::minutes(30));
+    }
+
+    #[test]
+    fn resolves_explicit_range_before_end() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 18, 12, 0, 0)
+            .single()
+            .expect("fixed timestamp");
+        let end = "2026-02-18T11:00:00Z";
+
+        let (start, end) =
+            resolve_time_range_with_range(None, Some(end), Some("10m"), New_York, now)
+                .expect("valid range");
+
+        assert_eq!(end, now - Duration::hours(1));
+        assert_eq!(end - start, Duration::minutes(10));
+    }
+
+    #[test]
+    fn rejects_range_with_start() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 2, 18, 12, 0, 0)
+            .single()
+            .expect("fixed timestamp");
+
+        let error = resolve_time_range_with_range(Some("1h"), None, Some("10m"), New_York, now)
+            .expect_err("ambiguous range should fail");
+
+        assert!(error.to_string().contains("range cannot be combined"));
     }
 
     #[test]

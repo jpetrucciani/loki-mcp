@@ -245,11 +245,15 @@ fn build_tools() -> Vec<Tool> {
         ),
         readonly_tool::<ListLabelsParams>(
             "loki_list_labels",
-            "List label names known to Loki, optionally scoped to a time range.",
+            "List label names known to Loki, optionally scoped by start/end or range.",
         ),
         readonly_tool::<LabelValuesParams>(
             "loki_label_values",
-            "List values for a label, optionally scoped by time and query selector.",
+            "List values for a label, optionally scoped by time, query selector, prefix, or substring pattern.",
+        ),
+        readonly_tool::<SearchLabelValuesParams>(
+            "loki_search_label_values",
+            "Search label values across labels with prefix or substring filtering.",
         ),
         readonly_tool::<SeriesParams>(
             "loki_series",
@@ -269,7 +273,7 @@ fn build_tools() -> Vec<Tool> {
         ),
         readonly_tool::<TailParams>(
             "loki_tail",
-            "Fetch the latest log lines for a required label set.",
+            "Fetch the latest log lines for a label set or LogQL query.",
         ),
         readonly_tool::<RunSavedQueryParams>(
             "loki_run_saved_query",
@@ -356,6 +360,7 @@ struct NoParams {}
 struct ListLabelsParams {
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -365,7 +370,24 @@ struct LabelValuesParams {
     label: String,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
     query: Option<String>,
+    prefix: Option<String>,
+    pattern: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SearchLabelValuesParams {
+    labels: Option<Vec<String>>,
+    start: Option<String>,
+    end: Option<String>,
+    range: Option<String>,
+    query: Option<String>,
+    prefix: Option<String>,
+    pattern: Option<String>,
+    limit_per_label: Option<usize>,
 }
 
 #[allow(dead_code)]
@@ -376,6 +398,7 @@ struct SeriesParams {
     r#match: Vec<String>,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -385,6 +408,7 @@ struct QueryLogsParams {
     query: String,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
     limit: Option<u32>,
     direction: Option<String>,
     response_mode: Option<String>,
@@ -397,6 +421,7 @@ struct QueryMetricsParams {
     query: String,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
     step: Option<String>,
 }
 
@@ -414,6 +439,7 @@ struct BuildQueryParams {
     aggregation_range: Option<String>,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
     limit: Option<u32>,
     response_mode: Option<String>,
 }
@@ -422,7 +448,9 @@ struct BuildQueryParams {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TailParams {
-    labels: BTreeMap<String, String>,
+    labels: Option<BTreeMap<String, String>>,
+    query: Option<String>,
+    range: Option<String>,
     lines: Option<u32>,
     response_mode: Option<String>,
 }
@@ -443,6 +471,7 @@ struct QueryStatsParams {
     query: String,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -452,6 +481,7 @@ struct DetectPatternsParams {
     query: String,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
     step: Option<String>,
 }
 
@@ -494,7 +524,7 @@ mod tests {
     #[test]
     fn registers_all_spec_tools_with_unique_names() {
         let tools = build_tools();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 16);
 
         let unique_count = tools
             .iter()
@@ -502,6 +532,6 @@ mod tests {
             .collect::<BTreeSet<String>>()
             .len();
 
-        assert_eq!(unique_count, 15);
+        assert_eq!(unique_count, 16);
     }
 }

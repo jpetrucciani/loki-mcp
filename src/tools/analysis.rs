@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::{
     loki::client::LokiClient,
-    time::{parse_time_reference, resolve_time_range},
+    time::{parse_time_reference, resolve_time_range_with_range},
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -16,6 +16,7 @@ pub struct QueryStatsInput {
     pub query: String,
     pub start: Option<String>,
     pub end: Option<String>,
+    pub range: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,6 +24,7 @@ pub struct DetectPatternsInput {
     pub query: String,
     pub start: Option<String>,
     pub end: Option<String>,
+    pub range: Option<String>,
     pub step: Option<String>,
 }
 
@@ -40,9 +42,10 @@ pub async fn query_stats(
     timezone: Tz,
     input: QueryStatsInput,
 ) -> Result<Value> {
-    let (start, end) = resolve_time_range(
+    let (start, end) = resolve_time_range_with_range(
         input.start.as_deref(),
         input.end.as_deref(),
+        input.range.as_deref(),
         timezone,
         Utc::now(),
     )?;
@@ -64,9 +67,10 @@ pub async fn detect_patterns(
     timezone: Tz,
     input: DetectPatternsInput,
 ) -> Result<Value> {
-    let (start, end) = resolve_time_range(
+    let (start, end) = resolve_time_range_with_range(
         input.start.as_deref(),
         input.end.as_deref(),
+        input.range.as_deref(),
         timezone,
         Utc::now(),
     )?;

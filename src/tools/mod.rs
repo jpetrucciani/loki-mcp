@@ -19,7 +19,9 @@ use crate::{
     guardrails::{self, GuardrailDecision},
     loki::{client::LokiClient, types::LokiQueryStats},
     metrics::MetricsRegistry,
-    time::{parse_std_duration, parse_time_reference, resolve_time_range},
+    time::{
+        parse_std_duration, parse_time_reference, resolve_time_range, resolve_time_range_with_range,
+    },
 };
 
 #[derive(Clone)]
@@ -163,6 +165,7 @@ impl ToolRouter {
                     self.timezone,
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                 )
                 .await
             }
@@ -171,10 +174,33 @@ impl ToolRouter {
                 discovery::label_values(
                     &self.loki_client,
                     self.timezone,
-                    &input.label,
-                    input.start.as_deref(),
-                    input.end.as_deref(),
-                    input.query.as_deref(),
+                    discovery::LabelValuesInput {
+                        label: &input.label,
+                        start: input.start.as_deref(),
+                        end: input.end.as_deref(),
+                        range: input.range.as_deref(),
+                        query: input.query.as_deref(),
+                        prefix: input.prefix.as_deref(),
+                        pattern: input.pattern.as_deref(),
+                    },
+                )
+                .await
+            }
+            "loki_search_label_values" => {
+                let input: SearchLabelValuesParams = parse_params(params)?;
+                discovery::search_label_values(
+                    &self.loki_client,
+                    self.timezone,
+                    discovery::SearchLabelValuesInput {
+                        labels: input.labels.as_deref(),
+                        start: input.start.as_deref(),
+                        end: input.end.as_deref(),
+                        range: input.range.as_deref(),
+                        query: input.query.as_deref(),
+                        prefix: input.prefix.as_deref(),
+                        pattern: input.pattern.as_deref(),
+                        limit_per_label: input.limit_per_label,
+                    },
                 )
                 .await
             }
@@ -186,6 +212,7 @@ impl ToolRouter {
                     &input.r#match,
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                 )
                 .await
             }
@@ -358,9 +385,10 @@ impl ToolRouter {
         match tool_name {
             "loki_query_logs" => {
                 let input: query::QueryLogsInput = parse_params(params.clone())?;
-                let range = resolve_time_range(
+                let range = resolve_time_range_with_range(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                     Utc::now(),
                 )?;
@@ -371,9 +399,10 @@ impl ToolRouter {
             }
             "loki_query_metrics" => {
                 let input: query::QueryMetricsInput = parse_params(params.clone())?;
-                let range = resolve_time_range(
+                let range = resolve_time_range_with_range(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                     Utc::now(),
                 )?;
@@ -391,9 +420,10 @@ impl ToolRouter {
                     built_query = format!("{aggregation}({built_query}[{aggregation_range}])");
                 }
 
-                let range = resolve_time_range(
+                let range = resolve_time_range_with_range(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                     Utc::now(),
                 )?;
@@ -405,11 +435,14 @@ impl ToolRouter {
             }
             "loki_tail" => {
                 let input: query::TailInput = parse_params(params.clone())?;
-                if input.labels.is_empty() {
-                    bail!("tail labels must not be empty");
-                }
-                let selector = query::selector_from_labels(&input.labels);
-                let range = resolve_time_range(None, None, self.timezone, Utc::now())?;
+                let selector = query::tail_query(&input)?;
+                let range = resolve_time_range_with_range(
+                    None,
+                    None,
+                    input.range.as_deref(),
+                    self.timezone,
+                    Utc::now(),
+                )?;
 
                 Ok(vec![GuardrailQuery {
                     query: selector,
@@ -446,9 +479,10 @@ impl ToolRouter {
             }
             "loki_detect_patterns" => {
                 let input: analysis::DetectPatternsInput = parse_params(params.clone())?;
-                let range = resolve_time_range(
+                let range = resolve_time_range_with_range(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                     Utc::now(),
                 )?;
@@ -485,6 +519,7 @@ impl ToolRouter {
                 range_duration_from_bounds(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
                 .map(Some)
@@ -494,6 +529,7 @@ impl ToolRouter {
                 range_duration_from_bounds(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
                 .map(Some)
@@ -503,11 +539,16 @@ impl ToolRouter {
                 range_duration_from_bounds(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
                 .map(Some)
             }
-            "loki_tail" => range_duration_from_bounds(None, None, self.timezone).map(Some),
+            "loki_tail" => {
+                let input: query::TailInput = parse_params(params.clone())?;
+                range_duration_from_bounds(None, None, input.range.as_deref(), self.timezone)
+                    .map(Some)
+            }
             "loki_run_saved_query" => {
                 let input: query::RunSavedQueryInput = parse_params(params.clone())?;
                 let Some(saved_query) = self
@@ -537,6 +578,7 @@ impl ToolRouter {
                 range_duration_from_bounds(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
                 .map(Some)
@@ -546,6 +588,7 @@ impl ToolRouter {
                 range_duration_from_bounds(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
                 .map(Some)
@@ -570,6 +613,7 @@ impl ToolRouter {
                 optional_discovery_range(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
             }
@@ -578,6 +622,16 @@ impl ToolRouter {
                 optional_discovery_range(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
+                    self.timezone,
+                )
+            }
+            "loki_search_label_values" => {
+                let input: SearchLabelValuesParams = parse_params(params.clone())?;
+                optional_discovery_range(
+                    input.start.as_deref(),
+                    input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
             }
@@ -586,6 +640,7 @@ impl ToolRouter {
                 optional_discovery_range(
                     input.start.as_deref(),
                     input.end.as_deref(),
+                    input.range.as_deref(),
                     self.timezone,
                 )
             }
@@ -607,6 +662,7 @@ fn is_cacheable_tool(tool_name: &str) -> bool {
         tool_name,
         "loki_list_labels"
             | "loki_label_values"
+            | "loki_search_label_values"
             | "loki_series"
             | "loki_query_logs"
             | "loki_query_metrics"
@@ -705,22 +761,24 @@ fn canonicalize_json(value: &Value) -> Value {
 fn range_duration_from_bounds(
     start: Option<&str>,
     end: Option<&str>,
+    range: Option<&str>,
     timezone: Tz,
 ) -> Result<StdDuration> {
-    let (start, end) = resolve_time_range(start, end, timezone, Utc::now())?;
+    let (start, end) = resolve_time_range_with_range(start, end, range, timezone, Utc::now())?;
     duration_between(start, end)
 }
 
 fn optional_discovery_range(
     start: Option<&str>,
     end: Option<&str>,
+    range: Option<&str>,
     timezone: Tz,
 ) -> Result<Option<StdDuration>> {
-    if start.is_none() && end.is_none() {
+    if start.is_none() && end.is_none() && range.is_none() {
         return Ok(None);
     }
 
-    range_duration_from_bounds(start, end, timezone).map(Some)
+    range_duration_from_bounds(start, end, range, timezone).map(Some)
 }
 
 fn duration_between(start: DateTime<Utc>, end: DateTime<Utc>) -> Result<StdDuration> {
@@ -746,6 +804,7 @@ struct GuardrailQuery {
 struct StartEndParams {
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -753,7 +812,22 @@ struct LabelValuesParams {
     label: String,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
     query: Option<String>,
+    prefix: Option<String>,
+    pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SearchLabelValuesParams {
+    labels: Option<Vec<String>>,
+    start: Option<String>,
+    end: Option<String>,
+    range: Option<String>,
+    query: Option<String>,
+    prefix: Option<String>,
+    pattern: Option<String>,
+    limit_per_label: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -761,6 +835,7 @@ struct SeriesParams {
     r#match: Vec<String>,
     start: Option<String>,
     end: Option<String>,
+    range: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
