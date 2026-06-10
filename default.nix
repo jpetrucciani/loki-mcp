@@ -1,15 +1,15 @@
 { pkgs ? import
     (fetchTarball {
-      name = "jpetrucciani-2026-01-21";
-      url = "https://github.com/jpetrucciani/nix/archive/0fa40e09f3d6b7fe29811caef876444be9fa2a1a.tar.gz";
-      sha256 = "16np1a2482l1s82yyxwh8d6igqqz4plc03fa9hv4mfricg2qicyi";
+      name = "jpetrucciani-2026-06-09";
+      url = "https://github.com/jpetrucciani/nix/archive/f45975ed809a3256547956e92d51ac6f56762e60.tar.gz";
+      sha256 = "0wq35nwqn9zf1kw9n8h3kchszc9nwpjbz51qyprajh18bnzfcxv1";
     })
     { overlays = [ _rust ]; }
 , _rust ? import
     (fetchTarball {
-      name = "oxalica-2026-01-21";
-      url = "https://github.com/oxalica/rust-overlay/archive/2ef5b3362af585a83bafd34e7fc9b1f388c2e5e2.tar.gz";
-      sha256 = "138a0p83qzflw8wj4a7cainqanjmvjlincx8imr3yq1b924lg9cz";
+      name = "oxalica-2026-06-04";
+      url = "https://github.com/oxalica/rust-overlay/archive/c30ca201c5093540cf792f6982f81ba1aa0f3514.tar.gz";
+      sha256 = "1hyirpyana0h23byn15l96nzzgj0nbvsg4fxpzxwvc3mjdw7pwm0";
     })
 }:
 let

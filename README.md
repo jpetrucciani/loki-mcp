@@ -13,6 +13,8 @@
 - 15 read-only MCP tools for discovery, querying, analysis, and health checks
 - Config layering with validation: `TOML -> env -> CLI`
 - Loki auth modes: `none`, `basic`, `bearer`
+- Optional static-header auth for MCP and debug endpoints
+- Optional CORS allowlist for browser-based MCP clients
 - Guardrails for bytes/streams limits with fail-closed behavior
 - Per-tool and per-identity rate limiting
 - Response modes for large result sets: `raw`, `truncated`, `summary`, `smart`
@@ -121,8 +123,18 @@ LOKI_MCP_CONFIG=/etc/loki-mcp/config.toml loki-mcp
 # CLI override
 loki-mcp --config config.toml --listen 0.0.0.0:8080 --loki-url https://loki:3100
 
+# enable static-header auth for /mcp and /debug/*
+loki-mcp --config config.toml --auth-token "$LOKI_MCP_TOKEN"
+
+# allow a browser-based MCP client origin
+loki-mcp --config config.toml --cors-allowed-origin http://localhost:6274
+
 # flattened env aliases
 LOKI_MCP_LOKI_URL=https://loki:3100 LOKI_MCP_LISTEN=0.0.0.0:8080 loki-mcp
+
+LOKI_MCP_AUTH_TOKEN="$LOKI_MCP_TOKEN" loki-mcp
+
+LOKI_MCP_CORS_ALLOWED_ORIGINS=http://localhost:6274,https://app.example.com loki-mcp
 
 # nested env form (double underscore)
 LOKI_MCP_LOKI__URL=https://loki:3100 LOKI_MCP_SERVER__LISTEN=0.0.0.0:8080 loki-mcp
@@ -134,6 +146,9 @@ Common env keys:
 - `LOKI_MCP_TIMEZONE`
 - `LOKI_MCP_LOG_LEVEL`
 - `LOKI_MCP_IDENTITY_HEADER`
+- `LOKI_MCP_AUTH_HEADER`
+- `LOKI_MCP_AUTH_TOKEN`
+- `LOKI_MCP_CORS_ALLOWED_ORIGINS`
 - `LOKI_MCP_LOKI_URL`
 - `LOKI_MCP_LOKI_TENANT_ID`
 - `LOKI_MCP_LOKI_AUTH_TYPE`
@@ -157,10 +172,33 @@ Use environment variables for secrets instead of committing credentials to TOML.
 
 MCP auth:
 
-- Built-in MCP authentication is intentionally disabled in v1.
-- Deploy `loki-mcp` behind a trusted reverse proxy/ingress.
-- Enforce authN/authZ at the proxy (OIDC/JWT/mTLS).
-- Forward an identity header and set `server.identity_header` to match.
+- Static-header auth is disabled unless `server.auth_token` is set.
+- When enabled, `GET` and `POST /mcp` and `/debug/*` requests must include the configured header with the exact token value.
+- The default header is `x-loki-mcp-token`; override it with `server.auth_header`, `--auth-header`, or `LOKI_MCP_AUTH_HEADER`.
+- `GET /healthz`, `GET /readyz`, and `GET /metrics` remain unauthenticated for probes and scraping.
+- For OIDC/JWT/mTLS or per-user authorization, deploy `loki-mcp` behind a trusted reverse proxy/ingress.
+- When using a proxy, strip spoofable inbound identity headers, forward a trusted identity header, and set `server.identity_header` to match.
+
+Example:
+
+```bash
+LOKI_MCP_AUTH_TOKEN="$LOKI_MCP_TOKEN" loki-mcp
+curl -H "x-loki-mcp-token: $LOKI_MCP_TOKEN" http://127.0.0.1:8080/mcp
+```
+
+CORS:
+
+- CORS is disabled unless `server.cors_allowed_origins` is non-empty.
+- Allowed origins must be origins only, for example `http://localhost:6274`, not paths like `http://localhost:6274/mcp`.
+- Use `server.cors_allowed_origins = ["*"]`, `--cors-allowed-origin '*'`, or `LOKI_MCP_CORS_ALLOWED_ORIGINS='*'` to allow any browser origin.
+- Wildcard CORS is useful for local inspection, but exact origins are better for shared deployments.
+- CORS preflight requests are handled before static-header auth, because browsers do not send custom auth headers on preflight.
+
+MCP Inspector often runs a browser UI from a localhost origin that differs from `loki-mcp`. If the Inspector reports CORS failures, start `loki-mcp` with the Inspector origin, or use wildcard CORS for local debugging:
+
+```bash
+LOKI_MCP_CORS_ALLOWED_ORIGINS='*' loki-mcp
+```
 
 Rate limiting identity keys are resolved in this order:
 
@@ -198,8 +236,8 @@ Cache and recent actions:
 - `GET /healthz`, liveness
 - `GET /readyz`, readiness (`200` healthy, `503` unhealthy)
 - `GET /metrics`, Prometheus metrics
-- `GET` and `POST /mcp`, MCP Streamable HTTP
-- `GET /debug/recent-actions?limit=100`, recent tool activity (`404` when disabled)
+- `GET` and `POST /mcp`, MCP Streamable HTTP, static-header protected when `server.auth_token` is set
+- `GET /debug/recent-actions?limit=100`, recent tool activity (`404` when disabled), static-header protected when `server.auth_token` is set
 
 Every HTTP response includes `x-request-id`.
 
@@ -211,6 +249,42 @@ Metrics use `[metrics].prefix` (default: `loki_mcp`):
 - `<prefix>_tool_guardrail_rejections_total{tool}`
 - `<prefix>_tool_rate_limited_total{tool}`
 - `<prefix>_readiness_cache_total{result}`
+
+## CLI Testing
+
+CLI tools are not subject to browser CORS checks. Use `curl` to separate MCP/auth failures from browser-origin failures.
+
+Check CORS preflight behavior:
+
+```bash
+curl -i -X OPTIONS http://127.0.0.1:8080/mcp \
+  -H 'Origin: http://localhost:6274' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type,x-loki-mcp-token,mcp-session-id'
+```
+
+Expected with a matching CORS allowlist: `204 No Content` and an `access-control-allow-origin` header.
+
+Send an MCP initialize request:
+
+```bash
+curl -i http://127.0.0.1:8080/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -H "x-loki-mcp-token: $LOKI_MCP_TOKEN" \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": {},
+      "clientInfo": {"name": "curl", "version": "0.0.0"}
+    }
+  }'
+```
+
+If static-header auth is disabled, omit the `x-loki-mcp-token` header.
 
 ## Development
 
@@ -245,3 +319,5 @@ LOKI_MCP_RUN_REAL_LOKI_TESTS=1 cargo test --test loki_client_it --test tool_rout
 - `loki_check_health` reports `/ready` 404, often expected behind gateways/proxies when other Loki APIs are reachable
 - TLS failures against Loki, set `loki.ca_cert` for private CAs
 - `/debug/recent-actions` returns 404, set `[recent_actions].enabled=true`
+- `/mcp` or `/debug/*` returns 401, send the configured auth header or unset `server.auth_token`
+- MCP Inspector reports CORS errors, add its browser origin to `server.cors_allowed_origins` or use `["*"]` for local debugging

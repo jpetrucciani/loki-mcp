@@ -6,9 +6,12 @@ use figment::{
     Figment,
     providers::{Env, Format, Serialized, Toml},
 };
+use reqwest::header::HeaderName;
 use serde::{Deserialize, Serialize, de::Deserializer};
 
 use crate::time::parse_std_duration;
+
+const DEFAULT_AUTH_HEADER: &str = "x-loki-mcp-token";
 
 #[derive(Debug, Clone, Parser)]
 #[command(author, version, about)]
@@ -24,6 +27,16 @@ pub struct Cli {
     pub log_level: Option<String>,
     #[arg(long)]
     pub identity_header: Option<String>,
+    #[arg(long)]
+    pub auth_header: Option<String>,
+    #[arg(long)]
+    pub auth_token: Option<String>,
+    #[arg(
+        long = "cors-allowed-origin",
+        alias = "cors-allowed-origins",
+        value_delimiter = ','
+    )]
+    pub cors_allowed_origins: Vec<String>,
 
     #[arg(long)]
     pub loki_url: Option<String>,
@@ -104,7 +117,10 @@ impl Config {
         self.server.listen = self.server.listen.trim().to_string();
         self.server.timezone = self.server.timezone.trim().to_string();
         self.server.log_level = self.server.log_level.trim().to_string();
+        self.server.auth_header = self.server.auth_header.trim().to_ascii_lowercase();
         normalize_optional_string(&mut self.server.identity_header);
+        normalize_optional_string(&mut self.server.auth_token);
+        normalize_cors_origins(&mut self.server.cors_allowed_origins);
 
         self.loki.url = self.loki.url.trim().to_string();
         self.loki.auth_type = self.loki.auth_type.trim().to_ascii_lowercase();
@@ -146,6 +162,18 @@ impl Config {
             .with_context(|| format!("invalid server.timezone: {}", self.server.timezone))?;
 
         ensure_non_empty("server.log_level", &self.server.log_level)?;
+        if self.server.auth_token.is_some() {
+            ensure_non_empty("server.auth_header", &self.server.auth_header)?;
+            HeaderName::from_str(&self.server.auth_header).with_context(|| {
+                format!(
+                    "server.auth_header must be a valid HTTP header name when server.auth_token is set, got {}",
+                    self.server.auth_header
+                )
+            })?;
+        }
+        for origin in &self.server.cors_allowed_origins {
+            validate_cors_origin(origin)?;
+        }
 
         ensure_non_empty("loki.url", &self.loki.url)?;
         reqwest::Url::parse(&self.loki.url)
@@ -228,6 +256,12 @@ pub struct ServerConfig {
     pub log_level: String,
     #[serde(default, deserialize_with = "empty_string_as_none")]
     pub identity_header: Option<String>,
+    #[serde(default = "default_auth_header")]
+    pub auth_header: String,
+    #[serde(default, deserialize_with = "empty_string_as_none")]
+    pub auth_token: Option<String>,
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -237,8 +271,15 @@ impl Default for ServerConfig {
             timezone: "America/New_York".to_string(),
             log_level: "info".to_string(),
             identity_header: None,
+            auth_header: default_auth_header(),
+            auth_token: None,
+            cors_allowed_origins: Vec::new(),
         }
     }
+}
+
+fn default_auth_header() -> String {
+    DEFAULT_AUTH_HEADER.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -403,6 +444,9 @@ impl ConfigOverrides {
             timezone: normalized(cli.timezone.clone()),
             log_level: normalized(cli.log_level.clone()),
             identity_header: normalized(cli.identity_header.clone()),
+            auth_header: normalized(cli.auth_header.clone()),
+            auth_token: normalized(cli.auth_token.clone()),
+            cors_allowed_origins: normalized_cors_origins(cli.cors_allowed_origins.clone()),
         };
 
         let loki = LokiOverrides {
@@ -472,6 +516,12 @@ struct ServerOverrides {
     log_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     identity_header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth_header: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cors_allowed_origins: Option<Vec<String>>,
 }
 
 impl IsEmpty for ServerOverrides {
@@ -480,6 +530,9 @@ impl IsEmpty for ServerOverrides {
             && self.timezone.is_none()
             && self.log_level.is_none()
             && self.identity_header.is_none()
+            && self.auth_header.is_none()
+            && self.auth_token.is_none()
+            && self.cors_allowed_origins.is_none()
     }
 }
 
@@ -629,6 +682,61 @@ fn normalized(value: Option<String>) -> Option<String> {
     })
 }
 
+fn normalized_cors_origins(values: Vec<String>) -> Option<Vec<String>> {
+    let mut values = values;
+    normalize_cors_origins(&mut values);
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
+fn normalize_string_list(values: &mut Vec<String>) {
+    let normalized = values
+        .iter()
+        .flat_map(|raw| raw.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    *values = normalized;
+}
+
+fn normalize_cors_origins(values: &mut Vec<String>) {
+    normalize_string_list(values);
+    for origin in values {
+        if let Some(canonical_origin) = canonical_cors_origin(origin) {
+            *origin = canonical_origin;
+        }
+    }
+}
+
+fn canonical_cors_origin(origin: &str) -> Option<String> {
+    if origin == "*" {
+        return Some(origin.to_string());
+    }
+
+    let url = reqwest::Url::parse(origin).ok()?;
+    if url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return None;
+    }
+
+    let mut canonical_origin = format!("{}://{}", url.scheme(), url.host_str()?);
+    if let Some(port) = url.port() {
+        canonical_origin.push(':');
+        canonical_origin.push_str(&port.to_string());
+    }
+
+    Some(canonical_origin)
+}
+
 fn normalize_optional_string(value: &mut Option<String>) {
     if let Some(inner) = value {
         let trimmed = inner.trim().to_string();
@@ -690,6 +798,9 @@ fn flat_env_overrides_from_map(vars: &BTreeMap<String, String>) -> Result<Config
         timezone: env_string(vars, "LOKI_MCP_TIMEZONE"),
         log_level: env_string(vars, "LOKI_MCP_LOG_LEVEL"),
         identity_header: env_string(vars, "LOKI_MCP_IDENTITY_HEADER"),
+        auth_header: env_string(vars, "LOKI_MCP_AUTH_HEADER"),
+        auth_token: env_string(vars, "LOKI_MCP_AUTH_TOKEN"),
+        cors_allowed_origins: env_string_list(vars, "LOKI_MCP_CORS_ALLOWED_ORIGINS"),
     };
 
     let loki = LokiOverrides {
@@ -763,6 +874,22 @@ fn env_string(vars: &BTreeMap<String, String>, key: &str) -> Option<String> {
     })
 }
 
+fn env_string_list(vars: &BTreeMap<String, String>, key: &str) -> Option<Vec<String>> {
+    vars.get(key).and_then(|value| {
+        let values = value
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if values.is_empty() {
+            None
+        } else {
+            Some(values)
+        }
+    })
+}
+
 fn env_parse<T>(vars: &BTreeMap<String, String>, key: &str) -> Result<Option<T>>
 where
     T: FromStr,
@@ -782,6 +909,36 @@ where
         .map_err(|err| anyhow!("invalid value for {key}: {trimmed} ({err})"))?;
 
     Ok(Some(parsed))
+}
+
+fn validate_cors_origin(origin: &str) -> Result<()> {
+    if origin == "*" {
+        return Ok(());
+    }
+
+    let url = reqwest::Url::parse(origin)
+        .with_context(|| format!("invalid server.cors_allowed_origins origin: {origin}"))?;
+
+    match url.scheme() {
+        "http" | "https" => {}
+        scheme => bail!(
+            "server.cors_allowed_origins entries must use http or https, got {scheme} in {origin}"
+        ),
+    }
+
+    if url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        bail!(
+            "server.cors_allowed_origins entries must be origins without path, query, fragment, or credentials: {origin}"
+        );
+    }
+
+    Ok(())
 }
 
 fn ensure_non_empty(key: &str, value: &str) -> Result<()> {
@@ -852,6 +1009,9 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.listen, "0.0.0.0:8080");
         assert_eq!(config.server.log_level, "info");
+        assert_eq!(config.server.auth_header, "x-loki-mcp-token");
+        assert!(config.server.auth_token.is_none());
+        assert!(config.server.cors_allowed_origins.is_empty());
         assert_eq!(config.loki.timeout, "30s");
     }
 
@@ -870,6 +1030,11 @@ mod tests {
                 "LOKI_MCP_LOKI_URL".to_string(),
                 "https://loki.example:3100".to_string(),
             ),
+            ("LOKI_MCP_AUTH_TOKEN".to_string(), "secret".to_string()),
+            (
+                "LOKI_MCP_CORS_ALLOWED_ORIGINS".to_string(),
+                "http://localhost:6274, https://app.example.com".to_string(),
+            ),
             ("LOKI_MCP_RATE_LIMIT_RPS".to_string(), "25.5".to_string()),
         ]);
 
@@ -878,6 +1043,11 @@ mod tests {
         let serialized = serde_json::to_value(overrides).expect("serializable");
 
         assert_eq!(serialized["server"]["listen"], "127.0.0.1:9090");
+        assert_eq!(serialized["server"]["auth_token"], "secret");
+        assert_eq!(
+            serialized["server"]["cors_allowed_origins"],
+            serde_json::json!(["http://localhost:6274", "https://app.example.com"])
+        );
         assert_eq!(serialized["loki"]["url"], "https://loki.example:3100");
         assert_eq!(serialized["rate_limit"]["rps"], 25.5);
     }
@@ -894,6 +1064,57 @@ mod tests {
             error
                 .to_string()
                 .contains("loki.username is required when loki.auth_type=basic")
+        );
+    }
+
+    #[test]
+    fn validation_rejects_invalid_server_auth_header_when_auth_is_enabled() {
+        let mut config = Config::default();
+        config.server.auth_header = "bad header".to_string();
+        config.server.auth_token = Some("secret".to_string());
+
+        let error = config
+            .validate()
+            .expect_err("invalid auth header should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("server.auth_header must be a valid HTTP header name")
+        );
+    }
+
+    #[test]
+    fn validation_accepts_wildcard_cors_origin() {
+        let mut config = Config::default();
+        config.server.cors_allowed_origins = vec!["*".to_string()];
+
+        config.validate().expect("wildcard origin should pass");
+    }
+
+    #[test]
+    fn normalize_canonicalizes_cors_origins() {
+        let mut config = Config::default();
+        config.server.cors_allowed_origins =
+            vec![" http://LOCALHOST:6274/ ".to_string(), "*".to_string()];
+
+        config.normalize();
+
+        assert_eq!(
+            config.server.cors_allowed_origins,
+            vec!["http://localhost:6274".to_string(), "*".to_string()]
+        );
+    }
+
+    #[test]
+    fn validation_rejects_cors_origins_with_paths() {
+        let mut config = Config::default();
+        config.server.cors_allowed_origins = vec!["http://localhost:6274/mcp".to_string()];
+
+        let error = config.validate().expect_err("origin with path should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("server.cors_allowed_origins entries must be origins")
         );
     }
 }

@@ -3,6 +3,9 @@ listen = "0.0.0.0:8080"
 timezone = "America/New_York"
 log_level = "info"
 identity_header = ""
+auth_header = "x-loki-mcp-token"
+auth_token = ""
+cors_allowed_origins = []
 
 [loki]
 url = "https://loki.internal:3100"
